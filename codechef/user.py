@@ -63,27 +63,9 @@ def removeKeys(attr, keyList):
 
     return attr
 
-#
-#   Helper function for getUserData() to parse the list of complete and partial problems.
-#
-def parseProblems(problemsC):
-    problemDict = OrderedDict()
+def clean(string):
+    return string.encode('ascii','ignore').decode('UTF-8')
 
-    for problemGroup in problemsC:
-        problemList = []
-        problemGroupList = problemGroup.findAll('a')
-        for problem in problemGroupList:
-            problemList.append(problem.text)
-        
-        #Added arbitary contest code "PRACTICE" for practice problems.
-        problemDict[ "PRACTICE" if problemGroup.b.text.startswith("Practice") else problemGroup.b.text ] = problemList
-
-    return problemDict
-
-"""
-    getUserData() does all the dirty work of parsing the HTML and junxing it altogether
-    in a crude 'attributes' dict.
-"""
 
 # TODO : Try to parse the SVG image of the rating curve, to extract all data about the contest rating at any time.
 # REFACTOR : Split all the parsing methods into seperate, for easy debugging.
@@ -93,45 +75,30 @@ def getUserData(handle):
     # Dictionary returning all the scraped data from the HTML.    
     attributes = OrderedDict()
 
-   # print("Yay")
     soup = downloadUserPage(handle)
-    #print(soup)
 
     # The profile_tab contains all the data about the user.
-    profileTab = soup.find('div', {'class': 'profile'})
+    profileTab = soup.find('div', {'class': 'user-profile-container'})
+    #print(profileTab)
 
-    #   This profile consists of four tables.
-    #
-    #   ->  The first table just contains the real name of the user, and the display picture.
-    #   ->  The second table contains the info about the user, and the problems info.
-    #   ->  The third table contains the problem statistics.
-    #   ->  The fourth table contains the performance graphs, in SVG format.
-    #
-
-    #Add the handle too, for convinenece.
+    attributes['real_name'] = profileTab.find('header').h2.text
     attributes['handle'] = handle
+    attributes['display_picture'] = profileTab.find('header').img['src']
 
-    #The real name is present in a simple div.user-name-box,
-    attributes['realname'] = profileTab.find('div', {'class' : 'user-name-box'}).text
-
-    #The displayPicture link is present in div.user-thumb-pic
-    attributes['display_picture'] = profileTab.find('div', {'class' : 'user-thumb-pic'}).img['src']
-
+    #   If there is no display_picture, convert the relative link into an absolute link.
     if (attributes['display_picture'].startswith('/sites/')):
         attributes['display_picture'] = "https://www.codechef.com/" + attributes['display_picture']    
 
-    row = profileTab.table.findNext("table").tr
+    handleDetails = profileTab.find('ul', {'class' : 'side-nav'})
 
-    #
-    #   Parsing the personal data of the user.
-    #
-    while not row.text[1:].startswith("Problems"):
+    for detail in handleDetails.findAll('li'):
+        parseText = detail.text.replace('\n','')
 
-        # Strip the text of unwanted &nbsp, and splitting via the :\
-        parsedText = row.text.replace("\n", '').split(':')
-
-        attributes[ convertToKey(parsedText[0]) ] = parsedText[1]
-        row = row.findNext("tr")
+        if parseText.startswith('Username'):
+            attributes['stars'] = parseText.split('★')[0][-1]
+        else:
+            parseText = parseText.split(':')
+            attributes[convertToKey(parseText[0])] = parseText[1].encode('ascii','ignore').decode('UTF-8') 
 
     #
     #   Removing unwanted keys from attributes (for now)
@@ -140,55 +107,36 @@ def getUserData(handle):
     attributes = removeKeys(attributes, unwantedKeys)
 
     #
-    #   Parsing the complete problem list.
+    #   Parsing fully solved and partially solved problems from the page.
     #
-    problemsComplete = row.td.findNext('td').findAll('p')
-    completeProblemDict = OrderedDict()
-    attributes['solved'] = parseProblems(problemsComplete)
+    problemSolved = profileTab.find('section', {'class' : 'rating-data-section problems-solved'})
+    problemSolved = problemSolved.find('div', {'class' : 'content'})
 
-    #
-    #   Parsing the partial problem list.
-    #
-    problemsPartial = row.findNext('tr').td.findNext('td').findAll('p')
-    partialProblemDict = OrderedDict()
-    attributes['partial'] = parseProblems(problemsPartial)
+    fullySolved = problemSolved.findAll('article')[0]
+    partiallySolved = problemSolved.findAll('article')[1]
 
-    #
-    #   Parsing the problem_stats table to get the number of submissions, WA, RTE, and the stuff.
-    #
-    problemStats = soup.find("table", id="problem_stats").tr.findNext('tr').findAll('td')
-    problemStats = [item.text for item in problemStats]
+    attributes['fully_solved'] = {}
+    attributes['partially_solved'] = {}
 
+    for contest in fullySolved.findAll('p'):
+        contest = clean(contest.text).split(':')
+        attributes['fully_solved'][contest[0]] = contest[1].split(',')
 
-    #
-    #   Parsing the problem submission statistics.
-    #
-    stats = {}
-    keys = ['pc', 'pp', 'ps', 'acp', 'acc', 'wa', 'cte', 'rte', 'tle']
-    for i in range(0, len(problemStats)):
-        stats[keys[i]] = int(problemStats[i])
-    attributes['stats'] = stats
+    for contest in partiallySolved.findAll('p'):
+        contest = clean(contest.text).split(':')
+        attributes['partially_solved'][contest[0]] = contest[1].split(',')
 
-    #
-    #   Parsing the rating table to get the current ratings of the user.
-    #
-    ratingTable = soup.find("table", {'class': "rating-table"}).findAll('tr')[1:4]
-    ratingList = {}
-    keys = ['long', 'short', 'ltime']
-    for i, tr in enumerate(ratingTable):
-        tr = tr.findAll('td')[1:3]
-        parsedText = tr[0].text
-        # If the user has not yet got a rank, set it to 0.
-        if (parsedText == "NA"):
-            parsedText = "0/0"
-        parsedText = parsedText.split('/')
-        ratingList[ keys[i] ] = [   int(parsedText[0]), 
-                                    int(parsedText[1]), 
-                                    float(tr[1].text.strip('(?)')) 
-                                ] 
+    # Rating table
 
-    attributes['rating'] = ratingList 
+#    attributes['rating'] = {}
+#    attributes['rating']['overall'] = int(soup.find('div', {'class' : 'rating-number'}).text)
+#    attributes['rating']['max'] = soup.find('div', {'class' : 'rating-star'}).findNext('small').text
+
+    print(attributes['rating'])
+
     return attributes
+
+
 
 #
 #   Returns the most recent submittions by a user.
@@ -241,4 +189,5 @@ def getRecent(handle, numberOfSub = 10):
     return content[:numberOfSub]
 
 if __name__ == '__main__':
-    print(json.dumps(getUserData('shauryachats'), indent=4))
+    getUserData('shauryachats')
+    #print(json.dumps(getUserData('shauryachats'), indent=4))
